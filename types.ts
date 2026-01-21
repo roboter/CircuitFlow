@@ -18,6 +18,7 @@ export interface Footprint {
   width: number;
   height: number;
   pins: Pin[];
+  valueType?: 'resistance' | 'capacitance'; // Dynamic property type
 }
 
 export interface PCBComponent {
@@ -26,6 +27,7 @@ export interface PCBComponent {
   name: string;
   position: Vector2;
   rotation: number; // in degrees
+  value?: string; // e.g., "10k", "100uF"
 }
 
 export interface Trace {

@@ -1,0 +1,9 @@
+{
+  "id": "PIN",
+  "name": "Junction",
+  "width": 25.4,
+  "height": 25.4,
+  "pins": [
+    {"id": "p1", "name": "J", "localPos": {"x": 12.7, "y": 12.7}, "type": "io"}
+  ]
+}

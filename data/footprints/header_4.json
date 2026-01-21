@@ -1,0 +1,12 @@
+{
+  "id": "header_4",
+  "name": "4-Pin Header",
+  "width": 50.8,
+  "height": 127.0,
+  "pins": [
+    {"id": "p1", "name": "1", "localPos": {"x": 25.4, "y": 25.4}, "type": "io"},
+    {"id": "p2", "name": "2", "localPos": {"x": 25.4, "y": 50.8}, "type": "io"},
+    {"id": "p3", "name": "3", "localPos": {"x": 25.4, "y": 76.2}, "type": "io"},
+    {"id": "p4", "name": "4", "localPos": {"x": 25.4, "y": 101.6}, "type": "io"}
+  ]
+}

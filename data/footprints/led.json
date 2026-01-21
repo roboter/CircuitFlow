@@ -1,0 +1,10 @@
+{
+  "id": "led",
+  "name": "LED 5mm",
+  "width": 76.2,
+  "height": 76.2,
+  "pins": [
+    {"id": "A", "name": "A", "localPos": {"x": 25.4, "y": 38.1}, "type": "io"},
+    {"id": "K", "name": "K", "localPos": {"x": 50.8, "y": 38.1}, "type": "io"}
+  ]
+}

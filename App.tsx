@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { 
   PCBComponent, Trace, Vector2, Pin 
@@ -10,21 +9,27 @@ import {
   Trash2, 
   Download, 
   RotateCw, 
-  Layers,
   CircuitBoard,
   MousePointer2,
   ZoomIn,
   ZoomOut,
   Plus,
   Hand,
-  Settings2,
-  X,
   MousePointerSquareDashed,
-  Spline,
   Activity,
   ShieldCheck,
   AlertTriangle,
-  CheckCircle2
+  CheckCircle2,
+  Settings2,
+  Info,
+  Layers,
+  Move,
+  X,
+  Type as TypeIcon,
+  Zap,
+  GitBranch,
+  Circle,
+  RefreshCw
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -45,11 +50,14 @@ const App: React.FC = () => {
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 0.5 });
   
   const dragRef = useRef<{
-    type: 'move' | 'route' | 'pan' | 'marquee' | 'handle';
+    type: 'move' | 'route' | 'pan' | 'marquee' | 'handle' | 'potential_split';
     id?: string;
     handleIdx?: 1 | 2;
     startWorld: Vector2;
     offset?: Vector2;
+    hasMoved?: boolean;
+    // Cache for immediately created components to fix staleness in drag
+    initialComp?: Partial<PCBComponent> & { footprintId: string; rotation: number };
   } | null>(null);
 
   const [routingPreview, setRoutingPreview] = useState<{from: Vector2, to: Vector2, path: string} | null>(null);
@@ -61,19 +69,55 @@ const App: React.FC = () => {
   // --- Helpers ---
   const snap = (v: number) => Math.round(v / SNAP_SIZE) * SNAP_SIZE;
 
-  // Uses SVG's own coordinate system matrices for 100% accurate coordinate mapping
   const getScreenToWorld = useCallback((clientX: number, clientY: number): Vector2 => {
     const svg = boardRef.current;
     const g = viewportRef.current;
     if (!svg || !g) return { x: 0, y: 0 };
-    
     const pt = svg.createSVGPoint();
     pt.x = clientX;
     pt.y = clientY;
-    
-    // Transform the screen point to the local coordinate system of the viewport group
     const worldPt = pt.matrixTransform(g.getScreenCTM()?.inverse());
     return { x: worldPt.x, y: worldPt.y };
+  }, []);
+
+  const handleZoom = useCallback((delta: number, centerX?: number, centerY?: number) => {
+    setViewport(prev => {
+      const scaleFactor = 1.15;
+      const zoomIn = delta > 0;
+      const newScale = zoomIn ? prev.scale * scaleFactor : prev.scale / scaleFactor;
+      const clampedScale = Math.min(Math.max(newScale, 0.05), 10);
+      
+      if (clampedScale === prev.scale) return prev;
+
+      let cx = centerX;
+      let cy = centerY;
+
+      if (cx === undefined || cy === undefined) {
+        const svg = boardRef.current;
+        if (svg) {
+          const rect = svg.getBoundingClientRect();
+          cx = rect.left + rect.width / 2;
+          cy = rect.top + rect.height / 2;
+        } else {
+          cx = window.innerWidth / 2;
+          cy = window.innerHeight / 2;
+        }
+      }
+
+      const svg = boardRef.current;
+      const rect = svg?.getBoundingClientRect() || { left: 0, top: 0 };
+      const localX = cx - rect.left;
+      const localY = cy - rect.top;
+
+      const worldX = (localX - prev.x) / prev.scale;
+      const worldY = (localY - prev.y) / prev.scale;
+
+      return {
+        x: localX - worldX * clampedScale,
+        y: localY - worldY * clampedScale,
+        scale: clampedScale
+      };
+    });
   }, []);
 
   const allPins = useMemo(() => {
@@ -88,12 +132,23 @@ const App: React.FC = () => {
     });
   }, [components]);
 
-  // --- DRC ---
+  const hoveredPin = useMemo(() => {
+    return allPins.find(p => p.id === hoveredPinId);
+  }, [allPins, hoveredPinId]);
+
+  // Derive selection info
+  const selectedItems = useMemo(() => {
+    const comps = components.filter(c => selectedIds.has(c.id));
+    const trcs = traces.filter(t => selectedIds.has(t.id));
+    return { components: comps, traces: trcs };
+  }, [components, traces, selectedIds]);
+
+  // --- DRC Logic ---
   const runDRC = useCallback(() => {
     setIsDrcRunning(true);
     const invalid = new Set<string>();
     const markers: Vector2[] = [];
-    const clearance = SNAP_SIZE * 0.4;
+    const clearance = SNAP_SIZE * 0.45;
 
     const traceData = traces.map(t => {
       const p1 = allPins.find(p => p.id === t.fromPinId);
@@ -101,7 +156,7 @@ const App: React.FC = () => {
       if (!p1 || !p2) return null;
       return {
         id: t.id, from: t.fromPinId, to: t.toPinId,
-        pts: Array.from({ length: 20 }, (_, i) => getPointOnBezier(i / 19, p1.globalPos, p2.globalPos, t))
+        pts: Array.from({ length: 15 }, (_, i) => getPointOnBezier(i / 14, p1.globalPos, p2.globalPos, t))
       };
     }).filter(d => d !== null);
 
@@ -112,45 +167,93 @@ const App: React.FC = () => {
         const connected = a.from === b.from || a.from === b.to || a.to === b.from || a.to === b.to;
         if (connected) continue;
 
+        let pairCollisionFound = false;
         for (const pa of a.pts) {
           for (const pb of b.pts) {
-            if (checkCollision(pa, pb, clearance + 10)) {
-              invalid.add(a.id); invalid.add(b.id);
-              if (markers.length < 15) markers.push({ x: (pa.x + pb.x)/2, y: (pa.y + pb.y)/2 });
+            if (checkCollision(pa, pb, clearance)) {
+              invalid.add(a.id); 
+              invalid.add(b.id);
+              if (!pairCollisionFound && markers.length < 30) {
+                markers.push({ x: (pa.x + pb.x)/2, y: (pa.y + pb.y)/2 });
+                pairCollisionFound = true; 
+              }
+              break;
             }
           }
+          if (pairCollisionFound) break;
         }
       }
     }
 
     components.forEach(c => {
-        const foot = FOOTPRINTS.find(f => f.id === c.footprintId);
-        if(!foot) return;
-        traceData.forEach(t => {
-            t.pts.forEach(pt => {
-                foot.pins.forEach(pin => {
-                    const pinId = `${c.id}_${pin.id}`;
-                    if (t.from === pinId || t.to === pinId) return;
-                    const pinPos = getPinGlobalPos(c, pin);
-                    if(checkCollision(pt, pinPos, clearance + 5)) {
-                        invalid.add(t.id);
-                        markers.push(pt);
-                    }
-                });
-            });
+      const foot = FOOTPRINTS.find(f => f.id === c.footprintId);
+      if(!foot) return;
+      traceData.forEach(t => {
+        let padCollisionFound = false;
+        foot.pins.forEach(pin => {
+          const pinId = `${c.id}_${pin.id}`;
+          if (t.from === pinId || t.to === pinId) return;
+          const pinPos = getPinGlobalPos(c, pin);
+          for (const pt of t.pts) {
+            if(checkCollision(pt, pinPos, clearance)) {
+              invalid.add(t.id);
+              if (!padCollisionFound && markers.length < 30) {
+                markers.push(pt);
+                padCollisionFound = true; 
+              }
+              break;
+            }
+          }
         });
+      });
     });
 
     setInvalidTraceIds(invalid);
     setViolationMarkers(markers);
-    setLastCheckResult(invalid.size > 0 ? 'fail' : 'pass');
-    setTimeout(() => setIsDrcRunning(false), 300);
+    setLastCheckResult(invalid.size > 0 ? 'fail' : (traces.length > 0 ? 'pass' : 'none'));
+    setTimeout(() => setIsDrcRunning(false), 200);
   }, [traces, allPins, components]);
 
   useEffect(() => {
-    const timeout = setTimeout(runDRC, 500);
+    const timeout = setTimeout(runDRC, 800);
     return () => clearTimeout(timeout);
   }, [traces, components, runDRC]);
+
+  // Create a junction at a specific world coordinate
+  const createJunctionAt = (world: Vector2): string => {
+    const junctionPos = { x: snap(world.x) - 12.7, y: snap(world.y) - 12.7 };
+    const junctionId = `comp_junc_${Date.now()}`;
+    const newJunction: PCBComponent = {
+      id: junctionId,
+      footprintId: 'PIN',
+      name: 'J' + (components.length + 1),
+      position: junctionPos,
+      rotation: 0
+    };
+    
+    setComponents(prev => [...prev, newJunction]);
+    return `${junctionId}_p1`;
+  };
+
+  // Helper to calculate comp pos from a snapped pin target
+  const getCompPosForPinTarget = (footprintId: string, targetPinWorld: Vector2, rotation: number) => {
+    const foot = FOOTPRINTS.find(f => f.id === footprintId);
+    if (!foot) return targetPinWorld;
+    const firstPin = foot.pins[0];
+    const rad = (rotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cx = foot.width / 2;
+    const cy = foot.height / 2;
+    const lx = firstPin.localPos.x - cx;
+    const ly = firstPin.localPos.y - cy;
+    const rx = lx * cos - ly * sin;
+    const ry = lx * sin + ly * cos;
+    return {
+      x: targetPinWorld.x - (rx + cx),
+      y: targetPinWorld.y - (ry + cy)
+    };
+  };
 
   // --- Interaction Handlers ---
   const onPointerDown = (e: React.PointerEvent) => {
@@ -160,13 +263,21 @@ const App: React.FC = () => {
     if (pendingFootprintId) {
       const foot = FOOTPRINTS.find(f => f.id === pendingFootprintId);
       if (foot) {
-        const pos = { x: snap(world.x - foot.width / 2), y: snap(world.y - foot.height / 2) };
+        const pos = getCompPosForPinTarget(pendingFootprintId, { x: snap(world.x), y: snap(world.y) }, 0);
         const id = `comp_${Date.now()}`;
-        setComponents(prev => [...prev, {
+        const newComp = {
           id, footprintId: pendingFootprintId, name: foot.name.split(' ')[0].substring(0,3).toUpperCase() + (components.length+1),
-          position: pos, rotation: 0
-        }]);
+          position: pos, rotation: 0, value: foot.valueType === 'resistance' ? '10k' : (foot.valueType === 'capacitance' ? '100nF' : undefined)
+        };
+        setComponents(prev => [...prev, newComp]);
         setSelectedIds(new Set([id]));
+        
+        // ALL components should be moved when placed until release
+        dragRef.current = { 
+          type: 'move', id, startWorld: world, offset: { x: 0, y: 0 }, hasMoved: true,
+          initialComp: newComp
+        };
+        
         setPendingFootprintId(null);
         setPreviewPos(null);
       }
@@ -178,13 +289,7 @@ const App: React.FC = () => {
       return;
     }
 
-    // Accurate hit-test for pins (max radius 12 world units to avoid overlaps on dense headers)
-    const hitPin = allPins.find(p => checkCollision(p.globalPos, world, 12));
-    if (hitPin && tool === 'select') {
-      dragRef.current = { type: 'route', id: hitPin.id, startWorld: world };
-      return;
-    }
-
+    // Check handles
     for (const tId of selectedIds) {
       const trace = traces.find(t => t.id === tId);
       if (trace) {
@@ -192,16 +297,56 @@ const App: React.FC = () => {
         const p2 = allPins.find(p => p.id === trace.toPinId);
         if (p1 && p2) {
           const ctrl = getBezierControlPoints(p1.globalPos, p2.globalPos, trace);
-          if (checkCollision(world, { x: ctrl.cx1, y: ctrl.cy1 }, 20)) {
-            dragRef.current = { type: 'handle', id: tId, handleIdx: 1, startWorld: world };
+          if (checkCollision(world, { x: ctrl.cx1, y: ctrl.cy1 }, 12)) {
+            dragRef.current = { type: 'handle', id: tId, handleIdx: 1, startWorld: world, offset: { x: world.x - ctrl.cx1, y: world.y - ctrl.cy1 } };
             return;
           }
-          if (checkCollision(world, { x: ctrl.cx2, y: ctrl.cy2 }, 20)) {
-            dragRef.current = { type: 'handle', id: tId, handleIdx: 2, startWorld: world };
+          if (checkCollision(world, { x: ctrl.cx2, y: ctrl.cy2 }, 12)) {
+            dragRef.current = { type: 'handle', id: tId, handleIdx: 2, startWorld: world, offset: { x: world.x - ctrl.cx2, y: world.y - ctrl.cy2 } };
             return;
           }
         }
       }
+    }
+
+    const hitPin = allPins.find(p => checkCollision(p.globalPos, world, 12));
+    if (hitPin && tool === 'select') {
+      const comp = components.find(c => c.id === hitPin.componentId);
+      // Junction logic: clicking/dragging a 'PIN' junction moves it
+      if (comp?.footprintId === 'PIN') {
+        setSelectedIds(new Set([comp.id]));
+        dragRef.current = { 
+          type: 'move', id: comp.id, startWorld: world, 
+          offset: { x: world.x - hitPin.globalPos.x, y: world.y - hitPin.globalPos.y },
+          hasMoved: false
+        };
+        return;
+      }
+      dragRef.current = { type: 'route', id: hitPin.id, startWorld: world };
+      return;
+    }
+
+    const hitTrace = [...traces].reverse().find(t => {
+      const p1 = allPins.find(p => p.id === t.fromPinId);
+      const p2 = allPins.find(p => p.id === t.toPinId);
+      if(!p1 || !p2) return false;
+      for(let i=0; i<=20; i++) {
+        const pt = getPointOnBezier(i/20, p1.globalPos, p2.globalPos, t);
+        if(checkCollision(world, pt, 15)) return true;
+      }
+      return false;
+    });
+
+    if (hitTrace) {
+      if (e.shiftKey) {
+        const next = new Set(selectedIds);
+        if (next.has(hitTrace.id)) next.delete(hitTrace.id); else next.add(hitTrace.id);
+        setSelectedIds(next);
+      } else {
+        setSelectedIds(new Set([hitTrace.id]));
+        dragRef.current = { type: 'potential_split', id: hitTrace.id, startWorld: world, hasMoved: false };
+      }
+      return;
     }
 
     const hitComp = [...components].reverse().find(c => {
@@ -211,446 +356,424 @@ const App: React.FC = () => {
     });
 
     if (hitComp) {
-      setSelectedIds(new Set([hitComp.id]));
+      const isSelected = selectedIds.has(hitComp.id);
+      if (!e.shiftKey && !isSelected) {
+        setSelectedIds(new Set([hitComp.id]));
+      } else if (e.shiftKey) {
+        const next = new Set(selectedIds);
+        if (isSelected) next.delete(hitComp.id); else next.add(hitComp.id);
+        setSelectedIds(next);
+      }
+      const p1 = allPins.find(p => p.componentId === hitComp.id);
       dragRef.current = { 
         type: 'move', id: hitComp.id, startWorld: world, 
-        offset: { x: world.x - hitComp.position.x, y: world.y - hitComp.position.y } 
+        offset: p1 ? { x: world.x - p1.globalPos.x, y: world.y - p1.globalPos.y } : { x: 0, y: 0 },
+        hasMoved: false
       };
       return;
     }
 
-    const hitTrace = traces.find(t => {
-      const p1 = allPins.find(p => p.id === t.fromPinId);
-      const p2 = allPins.find(p => p.id === t.toPinId);
-      if (!p1 || !p2) return false;
-      for (let i = 0; i <= 10; i++) {
-        const pt = getPointOnBezier(i / 10, p1.globalPos, p2.globalPos, t);
-        if (checkCollision(world, pt, 20)) return true;
-      }
-      return false;
-    });
-
-    if (hitTrace) {
-      setSelectedIds(new Set([hitTrace.id]));
-      return;
-    }
-
+    if (!e.shiftKey) setSelectedIds(new Set());
     dragRef.current = { type: 'marquee', startWorld: world };
-    setSelectedIds(new Set());
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     const world = getScreenToWorld(e.clientX, e.clientY);
+    if (pendingFootprintId) { setPreviewPos(world); return; }
     
-    // Accurately detect hovering over a pin (radius restricted to prevent ambiguity)
-    const hovering = allPins.find(p => checkCollision(p.globalPos, world, 12));
-    setHoveredPinId(hovering ? hovering.id : null);
-
-    if (pendingFootprintId) {
-      const foot = FOOTPRINTS.find(f => f.id === pendingFootprintId);
-      if (foot) setPreviewPos({ x: snap(world.x - foot.width / 2), y: snap(world.y - foot.height / 2) });
-      return;
+    const drag = dragRef.current;
+    const hitPin = allPins.find(p => checkCollision(p.globalPos, world, 15));
+    if (drag?.type === 'route' && hitPin?.id === drag.id) {
+      setHoveredPinId(null);
+    } else {
+      setHoveredPinId(hitPin?.id || null);
     }
 
-    if (!dragRef.current) return;
-    const d = dragRef.current;
+    if (!drag) return;
 
-    switch (d.type) {
-      case 'pan':
-        setViewport(v => ({ 
-          ...v, 
-          x: v.x + (e.clientX - d.startWorld.x), 
-          y: v.y + (e.clientY - d.startWorld.y) 
-        }));
-        dragRef.current!.startWorld = { x: e.clientX, y: e.clientY };
-        break;
-      case 'move':
-        if (d.id && d.offset) {
-          const next = { x: snap(world.x - d.offset.x), y: snap(world.y - d.offset.y) };
-          setComponents(prev => prev.map(c => c.id === d.id ? { ...c, position: next } : c));
+    if (drag.type === 'pan') {
+      const dx = e.clientX - drag.startWorld.x;
+      const dy = e.clientY - drag.startWorld.y;
+      setViewport(v => ({ ...v, x: v.x + dx, y: v.y + dy }));
+      drag.startWorld = { x: e.clientX, y: e.clientY };
+    } else if (drag.type === 'potential_split' && drag.id) {
+      const dist = Math.hypot(world.x - drag.startWorld.x, world.y - drag.startWorld.y);
+      if (dist > 8) {
+        const hitTrace = traces.find(t => t.id === drag.id);
+        if (hitTrace) {
+          const junctionPinId = createJunctionAt(world);
+          const newCompId = junctionPinId.split('_')[0];
+          const seg1: Trace = { id: `trace_${Date.now()}_1`, fromPinId: hitTrace.fromPinId, toPinId: junctionPinId, width: hitTrace.width, color: hitTrace.color };
+          const seg2: Trace = { id: `trace_${Date.now()}_2`, fromPinId: junctionPinId, toPinId: hitTrace.toPinId, width: hitTrace.width, color: hitTrace.color };
+          setTraces(prev => [...prev.filter(t => t.id !== hitTrace.id), seg1, seg2]);
+          setSelectedIds(new Set([newCompId]));
+          
+          const newJunction = { id: newCompId, footprintId: 'PIN', rotation: 0 };
+          dragRef.current = { 
+            type: 'move', id: newCompId, startWorld: world, offset: { x: 0, y: 0 }, hasMoved: true,
+            initialComp: newJunction as any
+          };
         }
-        break;
-      case 'route':
-        const startPin = allPins.find(p => p.id === d.id);
-        if (startPin) {
-            const path = generateBezierPath(startPin.globalPos, world);
-            setRoutingPreview({ from: startPin.globalPos, to: world, path });
-        }
-        break;
-      case 'handle':
-        if (d.id && d.handleIdx) {
-          const trace = traces.find(t => t.id === d.id);
-          const p1 = allPins.find(p => p.id === trace?.fromPinId);
-          const p2 = allPins.find(p => p.id === trace?.toPinId);
-          if (p1 && p2) {
-            const anchor = d.handleIdx === 1 ? p1.globalPos : p2.globalPos;
-            const key = d.handleIdx === 1 ? 'c1Offset' : 'c2Offset';
-            setTraces(prev => prev.map(t => t.id === d.id ? { ...t, [key]: { x: world.x - anchor.x, y: world.y - anchor.y } } : t));
+      }
+    } else if (drag.type === 'move' && drag.id) {
+      // Priority 1: Check components list. Priority 2: Use initialComp cache for just-added components.
+      const comp = components.find(c => c.id === drag.id) || drag.initialComp;
+      if (comp) {
+        const snappedPinWorld = { x: snap(world.x - (drag.offset?.x || 0)), y: snap(world.y - (drag.offset?.y || 0)) };
+        const newPos = getCompPosForPinTarget(comp.footprintId, snappedPinWorld, comp.rotation);
+        if (Math.abs(newPos.x - (comp.position?.x || 0)) > 1 || Math.abs(newPos.y - (comp.position?.y || 0)) > 1) drag.hasMoved = true;
+        setComponents(prev => prev.map(c => c.id === drag.id ? { ...c, position: newPos } : c));
+      }
+    } else if (drag.type === 'route' && drag.id) {
+      const startPin = allPins.find(p => p.id === drag.id);
+      if (startPin) {
+        const targetPinPos = hitPin && hitPin.id !== drag.id ? hitPin.globalPos : world;
+        setRoutingPreview({ from: startPin.globalPos, to: targetPinPos, path: generateBezierPath(startPin.globalPos, targetPinPos) });
+      }
+    } else if (drag.type === 'handle' && drag.id && drag.handleIdx) {
+      const targetPos = { x: world.x - (drag.offset?.x || 0), y: world.y - (drag.offset?.y || 0) };
+      setTraces(prev => {
+        const newTraces = prev.map(t => {
+          if (t.id !== drag.id) return t;
+          const p1 = allPins.find(p => p.id === t.fromPinId);
+          const p2 = allPins.find(p => p.id === t.toPinId);
+          if (!p1 || !p2) return t;
+          return drag.handleIdx === 1 
+            ? { ...t, c1Offset: { x: targetPos.x - p1.globalPos.x, y: targetPos.y - p1.globalPos.y } }
+            : { ...t, c2Offset: { x: targetPos.x - p2.globalPos.x, y: targetPos.y - p2.globalPos.y } };
+        });
+
+        // Smooth Joining Logic: Adjust adjacent traces at 'PIN' junctions
+        const movedTrace = newTraces.find(t => t.id === drag.id);
+        if (movedTrace) {
+          const pinId = drag.handleIdx === 1 ? movedTrace.fromPinId : movedTrace.toPinId;
+          const pin = allPins.find(p => p.id === pinId);
+          const comp = components.find(c => c.id === pin?.componentId);
+          if (comp?.footprintId === 'PIN') {
+            const adjacent = newTraces.find(t => t.id !== movedTrace.id && (t.fromPinId === pinId || t.toPinId === pinId));
+            if (adjacent) {
+              const movingOffset = drag.handleIdx === 1 ? movedTrace.c1Offset! : movedTrace.c2Offset!;
+              const oppositeOffset = { x: -movingOffset.x, y: -movingOffset.y };
+              if (adjacent.fromPinId === pinId) adjacent.c1Offset = oppositeOffset;
+              else adjacent.c2Offset = oppositeOffset;
+            }
           }
         }
-        break;
-      case 'marquee':
-        setMarquee({ start: d.startWorld, end: world });
-        break;
+        return [...newTraces];
+      });
+    } else if (drag.type === 'marquee') {
+      setMarquee({ start: drag.startWorld, end: world });
+      const minX = Math.min(drag.startWorld.x, world.x), maxX = Math.max(drag.startWorld.x, world.x);
+      const minY = Math.min(drag.startWorld.y, world.y), maxY = Math.max(drag.startWorld.y, world.y);
+      const inBox = components.filter(c => {
+        const f = FOOTPRINTS.find(foot => foot.id === c.footprintId);
+        return f && c.position.x >= minX && c.position.x + f.width <= maxX && c.position.y >= minY && c.position.y + f.height <= maxY;
+      }).map(c => c.id);
+      setSelectedIds(new Set(inBox));
     }
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
-    if (!dragRef.current) return;
-    const d = dragRef.current;
-    const world = getScreenToWorld(e.clientX, e.clientY);
-
-    if (d.type === 'route' && d.id) {
-      const endPin = allPins.find(p => p.id !== d.id && checkCollision(p.globalPos, world, 12));
-      if (endPin) {
-        setTraces(prev => [...prev, {
-          id: `trace_${Date.now()}`, fromPinId: d.id!, toPinId: endPin.id, width: 8, color: '#10b981'
-        }]);
+    const drag = dragRef.current;
+    if (drag?.type === 'route' && routingPreview) {
+      const world = getScreenToWorld(e.clientX, e.clientY);
+      const endPin = allPins.find(p => checkCollision(p.globalPos, world, 15) && p.id !== drag.id);
+      if (endPin && drag.id) {
+        setTraces(prev => [...prev, { id: `trace_${Date.now()}`, fromPinId: drag.id!, toPinId: endPin.id, width: 8, color: '#10b981' }]);
+      } else {
+        const hitTrace = [...traces].reverse().find(t => {
+          const p1 = allPins.find(p => p.id === t.fromPinId), p2 = allPins.find(p => p.id === t.toPinId);
+          if(!p1 || !p2) return false;
+          for(let i=0; i<=20; i++) {
+            const pt = getPointOnBezier(i/20, p1.globalPos, p2.globalPos, t);
+            if(checkCollision(world, pt, 25)) return true;
+          }
+          return false;
+        });
+        if (hitTrace) {
+          const junctionPinId = createJunctionAt(world);
+          setTraces(prev => [...prev, { id: `trace_${Date.now()}`, fromPinId: drag.id!, toPinId: junctionPinId, width: 8, color: '#10b981' }]);
+        }
       }
-    } else if (d.type === 'marquee' && marquee) {
-      const x1 = Math.min(marquee.start.x, marquee.end.x);
-      const x2 = Math.max(marquee.start.x, marquee.end.x);
-      const y1 = Math.min(marquee.start.y, marquee.end.y);
-      const y2 = Math.max(marquee.start.y, marquee.end.y);
-      const newSel = new Set<string>();
-      components.forEach(c => {
-        if (c.position.x >= x1 && c.position.x <= x2 && c.position.y >= y1 && c.position.y <= y2) newSel.add(c.id);
-      });
-      traces.forEach(t => {
-        const p1 = allPins.find(p => p.id === t.fromPinId);
-        if (p1 && p1.globalPos.x >= x1 && p1.globalPos.x <= x2 && p1.globalPos.y >= y1 && p1.globalPos.y <= y2) newSel.add(t.id);
-      });
-      setSelectedIds(newSel);
     }
-
     dragRef.current = null;
     setRoutingPreview(null);
     setMarquee(null);
+    setHoveredPinId(null);
   };
 
   const onWheel = (e: React.WheelEvent) => {
-    const factor = e.deltaY > 0 ? 0.9 : 1.1;
-    const nextScale = Math.min(Math.max(viewport.scale * factor, 0.1), 3);
-    
-    const svg = boardRef.current;
-    if (svg) {
-      const rect = svg.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-      
-      const worldX = (mouseX - viewport.x) / viewport.scale;
-      const worldY = (mouseY - viewport.y) / viewport.scale;
-      
-      setViewport({
-        x: mouseX - worldX * nextScale,
-        y: mouseY - worldY * nextScale,
-        scale: nextScale
-      });
-    }
+    e.preventDefault();
+    handleZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
   };
 
-  const activeComp = selectedIds.size === 1 ? components.find(c => selectedIds.has(c.id)) : null;
-  const activeTrace = selectedIds.size === 1 ? traces.find(t => selectedIds.has(t.id)) : null;
+  const rotateSelected = () => {
+    setComponents(prev => prev.map(c => selectedIds.has(c.id) ? { ...c, rotation: (c.rotation + 90) % 360 } : c));
+  };
+
+  const deleteSelected = () => {
+    const selectedComps = components.filter(c => selectedIds.has(c.id));
+    const junctionToMerge = selectedComps.find(c => c.footprintId === 'PIN');
+    
+    // Auto-merge logic for junction deletion
+    if (junctionToMerge && selectedIds.size === 1) {
+      const connectedTraces = traces.filter(t => 
+        t.fromPinId.startsWith(junctionToMerge.id) || 
+        t.toPinId.startsWith(junctionToMerge.id)
+      );
+
+      if (connectedTraces.length === 2) {
+        const [t1, t2] = connectedTraces;
+        const startPinId = t1.fromPinId.startsWith(junctionToMerge.id) ? t1.toPinId : t1.fromPinId;
+        const endPinId = t2.fromPinId.startsWith(junctionToMerge.id) ? t2.toPinId : t2.fromPinId;
+        const merged: Trace = {
+          id: `trace_merged_${Date.now()}`,
+          fromPinId: startPinId,
+          toPinId: endPinId,
+          width: Math.max(t1.width, t2.width),
+          color: t1.color
+        };
+        setTraces(prev => [...prev.filter(t => t.id !== t1.id && t.id !== t2.id), merged]);
+        setComponents(prev => prev.filter(c => c.id !== junctionToMerge.id));
+        setSelectedIds(new Set([merged.id]));
+        return;
+      }
+    }
+
+    setComponents(prev => prev.filter(c => !selectedIds.has(c.id)));
+    setTraces(prev => prev.filter(t => !selectedIds.has(t.id) && 
+      !selectedIds.has(allPins.find(p => p.id === t.fromPinId)?.componentId || '') &&
+      !selectedIds.has(allPins.find(p => p.id === t.toPinId)?.componentId || '')
+    ));
+    setSelectedIds(new Set());
+  };
+
+  const updateTraceWidth = (id: string, width: number) => {
+    setTraces(prev => prev.map(t => t.id === id ? { ...t, width } : t));
+  };
+
+  const updateComponentProps = (id: string, updates: Partial<PCBComponent>) => {
+    setComponents(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c));
+  };
 
   return (
-    <div className="flex h-screen bg-[#07100a] text-emerald-50 overflow-hidden font-sans select-none touch-none">
-      <aside className="w-72 bg-[#0a1a0f] border-r border-emerald-900/30 flex flex-col shadow-2xl z-40">
-        <div className="p-6 border-b border-emerald-900/20">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="p-2 bg-emerald-500 rounded-lg shadow-lg shadow-emerald-500/20"><CircuitBoard size={24} className="text-white" /></div>
-            <h1 className="text-xl font-black tracking-tight text-white italic">CircuitFlow</h1>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={() => { setTool('select'); setPendingFootprintId(null); }} className={`flex-1 p-3 rounded-xl border transition-all ${tool === 'select' && !pendingFootprintId ? 'bg-emerald-500 text-white border-emerald-500 shadow-lg shadow-emerald-500/20' : 'bg-[#0d2315] border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`} title="Selection Tool"><MousePointer2 size={18} className="mx-auto"/></button>
-            <button onClick={() => { setTool('pan'); setPendingFootprintId(null); }} className={`flex-1 p-3 rounded-xl border transition-all ${tool === 'pan' ? 'bg-emerald-500 text-white border-emerald-500 shadow-lg shadow-emerald-500/20' : 'bg-[#0d2315] border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`} title="Pan Tool"><Hand size={18} className="mx-auto"/></button>
+    <div className="flex h-screen w-full bg-zinc-950 text-zinc-200 overflow-hidden font-sans select-none">
+      <div className="w-72 bg-zinc-900 border-r border-zinc-800 flex flex-col p-4 gap-6 z-10 shadow-2xl overflow-y-auto scrollbar-thin">
+        <div className="flex items-center gap-3 px-2">
+          <div className="bg-emerald-500/10 p-2 rounded-lg"><CircuitBoard className="text-emerald-500" size={24} /></div>
+          <h1 className="font-bold text-xl tracking-tight bg-gradient-to-br from-white to-zinc-500 bg-clip-text text-transparent">CircuitFlow</h1>
+        </div>
+        <div className="flex flex-col gap-3">
+          <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider px-2 flex items-center gap-2">
+            <Layers size={14} /> Library
+          </label>
+          <div className="grid grid-cols-1 gap-2">
+            {FOOTPRINTS.filter(f => f.id !== 'PIN').map(f => (
+              <button key={f.id} onClick={() => setPendingFootprintId(f.id)} className={`flex items-center gap-3 p-3 rounded-xl transition-all text-sm font-medium ${pendingFootprintId === f.id ? 'bg-emerald-500 text-white shadow-lg' : 'bg-zinc-800/50 hover:bg-zinc-800 border border-zinc-700/50'}`}>
+                <div className="p-1.5 bg-zinc-900/50 rounded-md">{f.id === 'pin' ? <Circle size={16} /> : <Plus size={16} />}</div>
+                {f.name}
+              </button>
+            ))}
           </div>
         </div>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-          <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-emerald-700 px-2 flex justify-between items-center">
-                Check Board
-                <Activity size={12} />
-            </label>
-            <button 
-                onClick={runDRC} 
-                className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl border transition-all active:scale-95 ${isDrcRunning ? 'opacity-50 pointer-events-none' : ''} ${lastCheckResult === 'fail' ? 'bg-rose-600/10 border-rose-500 text-rose-500' : 'bg-emerald-600/10 border-emerald-500/50 text-emerald-500 hover:bg-emerald-600/20'}`}
-            >
-                <ShieldCheck size={16} /> 
-                {isDrcRunning ? 'Checking...' : 'Run DRC Check'}
-            </button>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-emerald-700 px-2 block">Footprints</label>
-            <div className="grid grid-cols-1 gap-2">
-                {FOOTPRINTS.filter(f => f.id !== 'junction').map(f => (
-                    <button key={f.id} onClick={() => { setPendingFootprintId(f.id); setTool('select'); setSelectedIds(new Set()); }} className={`w-full group flex items-center justify-between p-3 rounded-xl border transition-all ${pendingFootprintId === f.id ? 'bg-emerald-500/20 border-emerald-400' : 'bg-[#0d2315] hover:bg-[#112d1c] border-emerald-900/50'}`}>
-                    <div className="flex flex-col items-start">
-                        <span className="text-xs font-bold text-emerald-100">{f.name}</span>
-                        <span className="text-[8px] text-emerald-800 uppercase font-black">{f.pins.length} Pins</span>
-                    </div>
-                    <div className="p-1.5 rounded-lg bg-emerald-900/30 group-hover:bg-emerald-500 transition-colors">
-                        <Plus size={14} className="text-emerald-400 group-hover:text-white" />
-                    </div>
-                    </button>
-                ))}
+        <div className="mt-auto flex flex-col gap-4 border-t border-zinc-800 pt-6">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between px-2 mb-1">
+              <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">DRC Status</span>
+              <button onClick={() => runDRC()} className="hover:bg-zinc-800 p-1.5 rounded-lg text-zinc-500 hover:text-emerald-500 transition-colors">
+                <RefreshCw size={14} className={isDrcRunning ? "animate-spin" : ""} />
+              </button>
+            </div>
+            <div className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${lastCheckResult === 'fail' ? 'bg-red-500/10 border-red-500/50 text-red-400' : lastCheckResult === 'pass' ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400' : 'bg-zinc-800/50 border-zinc-700/50 text-zinc-500'}`}>
+              <div className="shrink-0">{lastCheckResult === 'fail' ? <AlertTriangle size={24} /> : lastCheckResult === 'pass' ? <CheckCircle2 size={24} /> : <ShieldCheck size={24} />}</div>
+              <span className="text-sm font-bold tracking-tight">{isDrcRunning ? 'Analyzing...' : lastCheckResult === 'fail' ? `${invalidTraceIds.size} Conflicts` : lastCheckResult === 'pass' ? 'Rules Pass' : 'Board Empty'}</span>
             </div>
           </div>
-        </div>
-
-        <div className="p-4 border-t border-emerald-900/20">
-          <button onClick={() => {
-            const gcode = exportToGRBL(components, traces, allPins as any);
-            const blob = new Blob([gcode], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url; link.download = 'board.nc'; link.click();
-          }} className="w-full flex items-center justify-center gap-2 py-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs uppercase tracking-widest shadow-xl shadow-emerald-900/20 transition-all active:scale-95">
-            <Download size={16} /> Export GRBL
+          <button onClick={() => console.log(exportToGRBL(components, traces, allPins))} className="flex items-center justify-center gap-2 w-full p-4 bg-zinc-100 hover:bg-white text-zinc-950 rounded-2xl font-bold transition-all hover:scale-[1.02] shadow-xl">
+            <Download size={20} /> Export GRBL
           </button>
         </div>
-      </aside>
+      </div>
 
-      <main className="flex-1 relative bg-[#050c07] overflow-hidden" 
-            onPointerDown={onPointerDown} 
-            onPointerMove={onPointerMove} 
-            onPointerUp={onPointerUp} 
-            onWheel={onWheel}>
-        <svg ref={boardRef} className="w-full h-full">
-          <defs>
-            <pattern id="grid-dots" width={SNAP_SIZE} height={SNAP_SIZE} patternUnits="userSpaceOnUse">
-              <circle cx="1" cy="1" r="1.2" fill="#152b1b" />
-            </pattern>
-            <filter id="glow">
-                <feGaussianBlur stdDeviation="3" result="coloredBlur" />
-                <feMerge>
-                    <feMergeNode in="coloredBlur" />
-                    <feMergeNode in="SourceGraphic" />
-                </feMerge>
-            </filter>
-          </defs>
-          <rect width="100%" height="100%" fill="url(#grid-dots)" />
+      <div className="flex-1 relative overflow-hidden">
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-2xl z-20">
+          <button onClick={() => setTool('select')} className={`p-3 rounded-xl transition-all ${tool === 'select' ? 'bg-emerald-500 text-white' : 'hover:bg-zinc-800 text-zinc-400'}`}><MousePointer2 size={20} /></button>
+          <button onClick={() => setTool('pan')} className={`p-3 rounded-xl transition-all ${tool === 'pan' ? 'bg-emerald-500 text-white' : 'hover:bg-zinc-800 text-zinc-400'}`}><Hand size={20} /></button>
+          <div className="w-px h-6 bg-zinc-800 mx-1" />
+          <button onClick={rotateSelected} className="p-3 rounded-xl hover:bg-zinc-800 text-zinc-400 disabled:opacity-30" disabled={selectedIds.size === 0}><RotateCw size={20} /></button>
+          <button onClick={deleteSelected} className="p-3 rounded-xl hover:bg-red-500/20 hover:text-red-400 text-zinc-400 disabled:opacity-30" disabled={selectedIds.size === 0}><Trash2 size={20} /></button>
+          <div className="w-px h-6 bg-zinc-800 mx-1" />
+          <div className="flex items-center gap-1 bg-zinc-950/50 rounded-xl px-2">
+            <button className="p-2 hover:bg-zinc-800 text-zinc-400" onClick={() => handleZoom(1)}><ZoomIn size={16} /></button>
+            <span className="text-[10px] font-mono text-zinc-600 w-12 text-center">{Math.round(viewport.scale * 100)}%</span>
+            <button className="p-2 hover:bg-zinc-800 text-zinc-400" onClick={() => handleZoom(-1)}><ZoomOut size={16} /></button>
+          </div>
+        </div>
 
+        <svg ref={boardRef} className="w-full h-full cursor-crosshair touch-none outline-none bg-zinc-950" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onWheel={onWheel}>
           <g ref={viewportRef} transform={`translate(${viewport.x}, ${viewport.y}) scale(${viewport.scale})`}>
-            {/* Traces */}
-            {traces.map(t => {
-              const p1 = allPins.find(p => p.id === t.fromPinId);
-              const p2 = allPins.find(p => p.id === t.toPinId);
-              if (!p1 || !p2) return null;
-              const isSel = selectedIds.has(t.id);
-              const isErr = invalidTraceIds.has(t.id);
-              const path = generateBezierPath(p1.globalPos, p2.globalPos, t);
-              return (
-                <g key={t.id}>
-                  <path 
-                    d={path} 
-                    fill="none" 
-                    stroke={isSel ? '#34d399' : (isErr ? '#ef4444' : '#10b981')} 
-                    strokeWidth={isSel ? t.width + 6 : t.width} 
-                    strokeLinecap="round" 
-                    opacity={isSel ? 1 : 0.8} 
-                    className="transition-all duration-200"
-                    filter={isSel ? 'url(#glow)' : ''}
-                  />
-                  <path d={path} fill="none" stroke="transparent" strokeWidth={40} className="cursor-pointer" onPointerDown={(e) => { e.stopPropagation(); setSelectedIds(new Set([t.id])); }} />
-                </g>
-              );
-            })}
+            <defs>
+              <pattern id="grid" width={SNAP_SIZE} height={SNAP_SIZE} patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="1.5" fill="#3f3f46" /></pattern>
+            </defs>
+            <rect x="-10000" y="-10000" width="20000" height="20000" fill="url(#grid)" />
 
-            {/* Components */}
             {components.map(c => {
               const foot = FOOTPRINTS.find(f => f.id === c.footprintId);
               if (!foot) return null;
-              const isSel = selectedIds.has(c.id);
+              const isSelected = selectedIds.has(c.id);
+              const isJunction = foot.id === 'PIN';
+              
               return (
-                <g key={c.id} transform={`translate(${c.position.x}, ${c.position.y}) rotate(${c.rotation}, ${foot.width/2}, ${foot.height/2})`}>
-                  <rect width={foot.width} height={foot.height} fill={isSel ? 'rgba(52, 211, 153, 0.15)' : 'rgba(255,255,255,0.03)'} stroke={isSel ? '#34d399' : '#1a4a23'} strokeWidth={isSel ? 5 : 2} rx={6} className="transition-all" />
-                  {foot.pins.map(p => (
-                    <g key={p.id}>
-                        <circle cx={p.localPos.x} cy={p.localPos.y} r={9} fill="#fcd34d" stroke={hoveredPinId === `${c.id}_${p.id}` ? 'white' : '#0a1a0f'} strokeWidth={2.5} />
-                        <circle cx={p.localPos.x} cy={p.localPos.y} r={4} fill="#0a1a0f" />
-                    </g>
-                  ))}
-                  <text x={foot.width/2} y={-14} textAnchor="middle" fill="#34d399" className="text-[12px] font-black uppercase tracking-widest">{c.name}</text>
+                <g key={c.id} transform={`translate(${c.position.x}, ${c.position.y}) rotate(${c.rotation}, ${foot.width/2}, ${foot.height/2})`} className="transition-transform duration-75">
+                  {!isJunction && (
+                    <rect width={foot.width} height={foot.height} fill={isSelected ? '#10b98115' : 'transparent'} stroke={isSelected ? '#10b981' : '#27272a'} strokeWidth="1.5" rx="4" />
+                  )}
+                  
+                  {foot.id === 'pin' && (
+                    <circle cx={foot.width/2} cy={foot.height/2} r={foot.width/2 - 2} fill="transparent" stroke={isSelected ? '#10b98140' : '#27272a40'} strokeWidth="1" strokeDasharray="2 2" />
+                  )}
+
+                  {!isJunction && <text x={foot.width / 2} y={-10} textAnchor="middle" fill="#3f3f46" className="text-[9px] font-mono font-bold pointer-events-none" dy=".3em">{c.name}</text>}
+                  {c.value && <text x={foot.width / 2} y={foot.height + 15} textAnchor="middle" fill="#10b981" className="text-[8px] font-mono font-bold pointer-events-none">{c.value}</text>}
+                  
+                  {foot.pins.map(pin => {
+                    const isHovered = hoveredPinId === `${c.id}_${pin.id}`;
+                    return (
+                      <g key={pin.id}>
+                        {isHovered && dragRef.current?.type === 'route' && <circle cx={pin.localPos.x} cy={pin.localPos.y} r="12" fill="#10b98120" className="animate-pulse" />}
+                        <circle cx={pin.localPos.x} cy={pin.localPos.y} r={isHovered ? 5.5 : 4} fill={isHovered ? '#10b981' : '#18181b'} stroke={pin.type === 'power' ? '#ef4444' : (pin.type === 'ground' ? '#3b82f6' : '#3f3f46')} strokeWidth="1" className="transition-all duration-150" />
+                      </g>
+                    );
+                  })}
                 </g>
               );
             })}
-
-            {/* Hover Tooltip (Centered on accurate pin global pos) */}
-            {hoveredPinId && (
-              <g transform={`translate(${allPins.find(p => p.id === hoveredPinId)?.globalPos.x}, ${allPins.find(p => p.id === hoveredPinId)?.globalPos.y})`}>
-                <rect x={16} y={-30} width={70} height={20} rx={6} fill="#0a1a0f" stroke="#10b981" strokeWidth={1.5} filter="url(#glow)" />
-                <text x={22} y={-15} fill="#10b981" className="text-[10px] font-black uppercase pointer-events-none">
-                  {allPins.find(p => p.id === hoveredPinId)?.name}
-                </text>
-              </g>
-            )}
-
-            {previewPos && pendingFootprintId && (
-              <g transform={`translate(${previewPos.x}, ${previewPos.y})`} className="opacity-60 pointer-events-none">
-                <rect width={FOOTPRINTS.find(f => f.id === pendingFootprintId)!.width} height={FOOTPRINTS.find(f => f.id === pendingFootprintId)!.height} fill="rgba(52, 211, 153, 0.4)" stroke="#34d399" strokeWidth={4} rx={6} strokeDasharray="10, 5" />
-              </g>
-            )}
-
-            {routingPreview && (
-                <path 
-                    d={routingPreview.path} 
-                    stroke="#fcd34d" 
-                    strokeWidth={6} 
-                    strokeDasharray="12, 8" 
-                    fill="none" 
-                    opacity={0.8}
-                />
-            )}
-            
-            {marquee && <rect x={Math.min(marquee.start.x, marquee.end.x)} y={Math.min(marquee.start.y, marquee.end.y)} width={Math.abs(marquee.start.x - marquee.end.x)} height={Math.abs(marquee.start.y - marquee.end.y)} fill="rgba(52, 211, 153, 0.15)" stroke="#34d399" strokeWidth={1} strokeDasharray="5" />}
 
             {traces.map(t => {
-              if (!selectedIds.has(t.id)) return null;
-              const p1 = allPins.find(p => p.id === t.fromPinId);
-              const p2 = allPins.find(p => p.id === t.toPinId);
+              const p1 = allPins.find(p => p.id === t.fromPinId), p2 = allPins.find(p => p.id === t.toPinId);
               if (!p1 || !p2) return null;
-              const { cx1, cy1, cx2, cy2 } = getBezierControlPoints(p1.globalPos, p2.globalPos, t);
+              const isSelected = selectedIds.has(t.id), isInvalid = invalidTraceIds.has(t.id);
+              const path = generateBezierPath(p1.globalPos, p2.globalPos, t);
               return (
-                <g key={`h-${t.id}`}>
-                  <line x1={p1.globalPos.x} y1={p1.globalPos.y} x2={cx1} y2={cy1} stroke="#10b981" strokeWidth={1} strokeDasharray="5" opacity={0.5} />
-                  <line x1={p2.globalPos.x} y1={p2.globalPos.y} x2={cx2} y2={cy2} stroke="#10b981" strokeWidth={1} strokeDasharray="5" opacity={0.5} />
-                  <circle cx={cx1} cy={cy1} r={14} fill="#10b981" stroke="white" strokeWidth={2} className="cursor-pointer transition-transform hover:scale-110" onPointerDown={(e) => { e.stopPropagation(); dragRef.current = { type: 'handle', id: t.id, handleIdx: 1, startWorld: getScreenToWorld(e.clientX, e.clientY) }; }} />
-                  <circle cx={cx2} cy={cy2} r={14} fill="#10b981" stroke="white" strokeWidth={2} className="cursor-pointer transition-transform hover:scale-110" onPointerDown={(e) => { e.stopPropagation(); dragRef.current = { type: 'handle', id: t.id, handleIdx: 2, startWorld: getScreenToWorld(e.clientX, e.clientY) }; }} />
+                <g key={t.id}>
+                  <path d={path} stroke="transparent" strokeWidth={t.width + 15} fill="none" strokeLinecap="round" className="cursor-pointer" />
+                  <path d={path} stroke={isInvalid ? '#ef4444' : (isSelected ? '#34d399' : '#10b981')} strokeWidth={t.width} fill="none" strokeLinecap="round" className="transition-colors pointer-events-none" />
+                  {isSelected && (
+                    <g className="pointer-events-none">
+                      {(() => {
+                        const { cx1, cy1, cx2, cy2 } = getBezierControlPoints(p1.globalPos, p2.globalPos, t);
+                        return (
+                          <>
+                            <line x1={p1.globalPos.x} y1={p1.globalPos.y} x2={cx1} y2={cy1} stroke="#10b981" strokeWidth="0.5" strokeDasharray="2 2" />
+                            <line x1={p2.globalPos.x} y1={p2.globalPos.y} x2={cx2} y2={cy2} stroke="#10b981" strokeWidth="0.5" strokeDasharray="2 2" />
+                            <circle cx={cx1} cy={cy1} r="3" fill="#10b981" className="pointer-events-auto cursor-move shadow-sm" />
+                            <circle cx={cx2} cy={cy2} r="3" fill="#10b981" className="pointer-events-auto cursor-move shadow-sm" />
+                          </>
+                        );
+                      })()}
+                    </g>
+                  )}
                 </g>
               );
             })}
 
+            {routingPreview && <path d={routingPreview.path} stroke="#10b981" strokeWidth="4" fill="none" strokeDasharray="4 4" className="pointer-events-none opacity-50" />}
             {violationMarkers.map((m, i) => (
-              <g key={`v-${i}`} transform={`translate(${m.x}, ${m.y})`}>
-                  <circle r={25} fill="rgba(239, 68, 68, 0.2)" stroke="#ef4444" strokeWidth={2} strokeDasharray="4,2" className="animate-pulse" />
-                  <AlertTriangle size={16} x={-8} y={-8} className="text-rose-500" />
-              </g>
+              <g key={i} transform={`translate(${m.x}, ${m.y})`}><circle r="18" fill="#ef444430" className="animate-pulse" /><path d="M 0 -12 L 12 9 L -12 9 Z" fill="#ef4444" stroke="#09090b" strokeWidth="1.5" strokeLinejoin="round" /><text x="0" y="6" textAnchor="middle" fill="#fff" className="text-[10px] font-bold font-sans pointer-events-none">!</text></g>
             ))}
+
+            {hoveredPin && !marquee && !pendingFootprintId && (
+              <g transform={`translate(${hoveredPin.globalPos.x + 15}, ${hoveredPin.globalPos.y - 15})`} className="pointer-events-none drop-shadow-2xl z-50">
+                <rect x="0" y="0" width={Math.max(80, hoveredPin.name.length * 9 + 40)} height="40" rx="6" fill="#09090b" stroke="#27272a" strokeWidth="1" />
+                <text x="10" y="16" fill="#10b981" className="text-[11px] font-mono font-bold tracking-tight">{hoveredPin.name}</text>
+                <text x="10" y="30" fill="#71717a" className="text-[9px] font-mono uppercase tracking-wider font-bold">{hoveredPin.type}</text>
+              </g>
+            )}
+
+            {pendingFootprintId && previewPos && (
+              (() => {
+                const foot = FOOTPRINTS.find(f => f.id === pendingFootprintId);
+                if (!foot) return null;
+                const tx = snap(previewPos.x);
+                const ty = snap(previewPos.y);
+                const compPos = getCompPosForPinTarget(pendingFootprintId, {x: tx, y: ty}, 0);
+                return (
+                  <g transform={`translate(${compPos.x}, ${compPos.y})`}>
+                    <rect width={foot.width} height={foot.height} fill="#10b98110" stroke="#10b981" strokeWidth="1" strokeDasharray="2 2" className="pointer-events-none" />
+                  </g>
+                );
+              })()
+            )}
+            {marquee && <rect x={Math.min(marquee.start.x, marquee.end.x)} y={Math.min(marquee.start.y, marquee.end.y)} width={Math.abs(marquee.end.x - marquee.start.x)} height={Math.abs(marquee.end.y - marquee.start.y)} fill="#10b98105" stroke="#10b981" strokeWidth="0.5" className="pointer-events-none" />}
           </g>
         </svg>
 
-        <div className="absolute top-6 left-6 flex flex-col gap-2 bg-[#0a1a0f]/90 backdrop-blur-md p-2 rounded-2xl border border-emerald-900/40 shadow-2xl">
-          <button onClick={() => {
-            const center = { x: boardRef.current!.clientWidth / 2, y: boardRef.current!.clientHeight / 2 };
-            const nextScale = Math.min(viewport.scale * 1.25, 3);
-            const worldX = (center.x - viewport.x) / viewport.scale;
-            const worldY = (center.y - viewport.y) / viewport.scale;
-            setViewport({ x: center.x - worldX * nextScale, y: center.y - worldY * nextScale, scale: nextScale });
-          }} className="p-3 text-emerald-500 hover:text-emerald-300 transition-colors"><ZoomIn size={22}/></button>
-          <div className="h-px bg-emerald-900/30 mx-2" />
-          <button onClick={() => {
-            const center = { x: boardRef.current!.clientWidth / 2, y: boardRef.current!.clientHeight / 2 };
-            const nextScale = Math.max(viewport.scale / 1.25, 0.1);
-            const worldX = (center.x - viewport.x) / viewport.scale;
-            const worldY = (center.y - viewport.y) / viewport.scale;
-            setViewport({ x: center.x - worldX * nextScale, y: center.y - worldY * nextScale, scale: nextScale });
-          }} className="p-3 text-emerald-500 hover:text-emerald-300 transition-colors"><ZoomOut size={22}/></button>
-        </div>
-      </main>
-
-      <aside className="w-80 bg-[#0a1a0f] border-l border-emerald-900/30 flex flex-col shadow-2xl z-40">
-        <div className="p-6 border-b border-emerald-900/20 flex items-center justify-between">
-            <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-600">Board Inspector</h2>
-            {lastCheckResult === 'pass' && <CheckCircle2 size={16} className="text-emerald-500" />}
-            {lastCheckResult === 'fail' && <AlertTriangle size={16} className="text-rose-500 animate-bounce" />}
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
-          {activeComp ? (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
-              <div className="space-y-2">
-                <label className="text-[10px] uppercase font-black text-emerald-700 tracking-widest">Designator</label>
-                <input type="text" value={activeComp.name} onChange={(e) => setComponents(prev => prev.map(c => c.id === activeComp.id ? {...c, name: e.target.value} : c))} className="w-full bg-[#050c07] border border-emerald-900/50 rounded-xl px-4 py-3 text-emerald-100 font-bold focus:border-emerald-500 transition-colors outline-none" />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] uppercase font-black text-emerald-700 tracking-widest">X Pos (mm)</label>
-                  <input type="number" step={SNAP_SIZE} value={Math.round(activeComp.position.x)} onChange={(e) => setComponents(prev => prev.map(c => c.id === activeComp.id ? {...c, position: {...c.position, x: Number(e.target.value)}} : c))} className="w-full bg-[#050c07] border border-emerald-900/50 rounded-xl px-4 py-3 text-emerald-100 text-sm font-bold outline-none" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] uppercase font-black text-emerald-700 tracking-widest">Y Pos (mm)</label>
-                  <input type="number" step={SNAP_SIZE} value={Math.round(activeComp.position.y)} onChange={(e) => setComponents(prev => prev.map(c => c.id === activeComp.id ? {...c, position: {...c.position, y: Number(e.target.value)}} : c))} className="w-full bg-[#050c07] border border-emerald-900/50 rounded-xl px-4 py-3 text-emerald-100 text-sm font-bold outline-none" />
-                </div>
-              </div>
-              <div className="space-y-4">
-                <label className="text-[10px] uppercase font-black text-emerald-700 tracking-widest">Rotation ({activeComp.rotation}°)</label>
-                <div className="flex items-center gap-4">
-                  <input type="range" min="0" max="270" step="90" value={activeComp.rotation} onChange={(e) => setComponents(prev => prev.map(c => c.id === activeComp.id ? {...c, rotation: Number(e.target.value)} : c))} className="flex-1 h-2 bg-[#050c07] rounded-lg appearance-none cursor-pointer accent-emerald-500" />
-                  <button onClick={() => setComponents(prev => prev.map(c => c.id === activeComp.id ? {...c, rotation: (c.rotation + 90) % 360} : c))} className="p-3 bg-emerald-900/20 rounded-xl border border-emerald-900/50 text-emerald-400 hover:text-emerald-200 transition-all active:scale-90"><RotateCw size={18}/></button>
-                </div>
-              </div>
-              <button onClick={() => {
-                setComponents(prev => prev.filter(c => c.id !== activeComp.id));
-                setTraces(prev => prev.filter(t => !t.fromPinId.startsWith(activeComp.id) && !t.toPinId.startsWith(activeComp.id)));
-                setSelectedIds(new Set());
-              }} className="w-full flex items-center justify-center gap-2 py-4 bg-rose-600/10 hover:bg-rose-600/20 text-rose-500 border border-rose-600/30 rounded-xl font-black text-xs uppercase tracking-widest transition-all"><Trash2 size={16} /> Delete Component</button>
-            </div>
-          ) : activeTrace ? (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
-              <div className="flex items-center gap-3 mb-2 p-4 bg-amber-500/5 border border-amber-500/20 rounded-2xl">
-                <div className="p-2 bg-amber-500/10 rounded-lg"><Spline size={20} className="text-amber-500" /></div>
-                <div>
-                    <h3 className="text-xs font-black text-emerald-50 uppercase tracking-widest">Trace Editor</h3>
-                    <p className="text-[9px] text-emerald-700 uppercase font-black">Curved Path</p>
-                </div>
-              </div>
-              <div className="space-y-4">
-                <label className="text-[10px] uppercase font-black text-emerald-700 tracking-widest flex justify-between">
-                  Track Width <span>{activeTrace.width} px</span>
-                </label>
-                <input 
-                  type="range" min="4" max="48" step="4" 
-                  value={activeTrace.width} 
-                  onChange={(e) => setTraces(prev => prev.map(t => t.id === activeTrace.id ? {...t, width: Number(e.target.value)} : t))} 
-                  className="w-full h-2 bg-[#050c07] rounded-lg appearance-none cursor-pointer accent-emerald-500" 
-                />
-              </div>
-              <div className="p-4 bg-[#0d2315] border border-emerald-900/30 rounded-xl space-y-4 shadow-inner">
-                 <div className="flex justify-between items-center">
-                    <span className="text-[9px] font-bold text-emerald-700 uppercase tracking-widest">From Pin</span>
-                    <span className="text-[10px] font-black text-emerald-400 p-1 px-2 bg-black/30 rounded">{allPins.find(p => p.id === activeTrace.fromPinId)?.name}</span>
-                 </div>
-                 <div className="h-px bg-emerald-900/20" />
-                 <div className="flex justify-between items-center">
-                    <span className="text-[9px] font-bold text-emerald-700 uppercase tracking-widest">To Pin</span>
-                    <span className="text-[10px] font-black text-emerald-400 p-1 px-2 bg-black/30 rounded">{allPins.find(p => p.id === activeTrace.toPinId)?.name}</span>
-                 </div>
-              </div>
-              <button onClick={() => {
-                setTraces(prev => prev.filter(t => t.id !== activeTrace.id));
-                setSelectedIds(new Set());
-              }} className="w-full flex items-center justify-center gap-2 py-4 bg-rose-600/10 hover:bg-rose-600/20 text-rose-500 border border-rose-600/30 rounded-xl font-black text-xs uppercase tracking-widest transition-all"><Trash2 size={16} /> Delete Trace</button>
-            </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full opacity-30 space-y-4 text-center">
-              <div className="p-8 border-2 border-dashed border-emerald-900/30 rounded-3xl">
-                <Settings2 size={64} className="text-emerald-700" />
-              </div>
-              <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-800">No Selection</p>
+        <div className="absolute top-24 left-6 flex flex-col gap-2 pointer-events-none">
+          {selectedIds.size > 0 && (
+            <div className="bg-zinc-900/80 backdrop-blur-sm px-4 py-2 rounded-xl border border-zinc-800 shadow-xl flex items-center gap-3 animate-in fade-in slide-in-from-left-2">
+              <MousePointerSquareDashed size={14} className="text-emerald-500" />
+              <span className="text-xs font-semibold">{selectedIds.size} Items Selected</span>
             </div>
           )}
         </div>
+      </div>
 
-        <div className={`p-6 border-t border-emerald-900/20 flex items-center gap-4 transition-colors ${invalidTraceIds.size > 0 ? 'bg-rose-950/20' : 'bg-[#050c07]'}`}>
-          <div className={`w-3 h-3 rounded-full shadow-lg ${invalidTraceIds.size > 0 ? 'bg-rose-500 animate-pulse shadow-rose-500/30' : 'bg-emerald-500 shadow-emerald-500/30'}`}></div>
-          <div className="flex-1">
-            <p className={`text-[10px] font-black uppercase tracking-widest ${invalidTraceIds.size > 0 ? 'text-rose-500' : 'text-emerald-700'} truncate`}>
-                {invalidTraceIds.size > 0 ? `${invalidTraceIds.size} DRC FAULTS` : 'DESIGN HEALTH: OK'}
-            </p>
-          </div>
-          {invalidTraceIds.size > 0 && <AlertTriangle size={14} className="text-rose-500" />}
+      <div className="w-80 bg-zinc-900 border-l border-zinc-800 flex flex-col p-4 gap-6 z-10 shadow-2xl overflow-y-auto scrollbar-thin">
+        <div className="flex items-center gap-3 px-2">
+          <Settings2 size={18} className="text-zinc-500" />
+          <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Inspector</h2>
         </div>
-      </aside>
-
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; } 
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1a4a23; border-radius: 10px; }
-        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-        .animate-in { animation: fade-in 0.2s ease-out; }
-      `}</style>
+        {selectedItems.traces.length === 1 && selectedItems.components.length === 0 ? (
+          <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-right-2">
+            <div className="p-4 bg-zinc-800/50 rounded-2xl border border-zinc-700/50">
+              <div className="flex items-center gap-2 mb-4"><Activity size={16} className="text-emerald-500" /><h3 className="text-sm font-bold">Trace Editor</h3></div>
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between items-center"><label className="text-[10px] text-zinc-500 font-bold uppercase">Trace Width</label><span className="text-[10px] font-mono text-emerald-500">{selectedItems.traces[0].width} px</span></div>
+                  <input type="range" min="1" max="50" step="1" value={selectedItems.traces[0].width} onChange={(e) => updateTraceWidth(selectedItems.traces[0].id, parseInt(e.target.value))} className="w-full accent-emerald-500 bg-zinc-900 h-1.5 rounded-lg appearance-none cursor-pointer" />
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : selectedItems.components.length === 1 && selectedItems.traces.length === 0 ? (
+          <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-right-2">
+            <div className="p-4 bg-zinc-800/50 rounded-2xl border border-zinc-700/50">
+              <div className="flex items-center gap-2 mb-4"><Layers size={16} className="text-emerald-500" /><h3 className="text-sm font-bold">Properties</h3></div>
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Designator</label>
+                  <input type="text" value={selectedItems.components[0].name} onChange={(e) => updateComponentProps(selectedItems.components[0].id, { name: e.target.value })} className="w-full bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-sm focus:border-emerald-500 outline-none transition-all font-mono" />
+                </div>
+                {(() => {
+                  const foot = FOOTPRINTS.find(f => f.id === selectedItems.components[0].footprintId);
+                  if (!foot || !foot.valueType) return null;
+                  return (
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">{foot.valueType === 'resistance' ? 'Resistance' : 'Capacitance'}</label>
+                      <div className="relative"><input type="text" value={selectedItems.components[0].value || ''} onChange={(e) => updateComponentProps(selectedItems.components[0].id, { value: e.target.value })} className="w-full bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-sm focus:border-emerald-500 outline-none transition-all font-mono pl-10" /><Zap size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500/50" /></div>
+                    </div>
+                  );
+                })()}
+                <div className="flex flex-col gap-2">
+                  <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Position</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input type="number" value={Math.round(selectedItems.components[0].position.x)} onChange={(e) => updateComponentProps(selectedItems.components[0].id, { position: { ...selectedItems.components[0].position, x: parseFloat(e.target.value) || 0 } })} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-sm focus:border-emerald-500 outline-none transition-all font-mono" />
+                    <input type="number" value={Math.round(selectedItems.components[0].position.y)} onChange={(e) => updateComponentProps(selectedItems.components[0].id, { position: { ...selectedItems.components[0].position, y: parseFloat(e.target.value) || 0 } })} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-sm focus:border-emerald-500 outline-none transition-all font-mono" />
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Rotation</label>
+                  <div className="grid grid-cols-4 gap-1">{[0, 90, 180, 270].map(angle => (<button key={angle} onClick={() => updateComponentProps(selectedItems.components[0].id, { rotation: angle })} className={`py-2 rounded-lg border transition-all text-[10px] font-bold ${selectedItems.components[0].rotation === angle ? 'bg-emerald-500 border-emerald-400 text-white' : 'bg-zinc-950 border-zinc-800 hover:border-zinc-700'}`}>{angle}°</button>))}</div>
+                </div>
+                <hr className="border-zinc-800 my-2" />
+                <button onClick={deleteSelected} className="w-full flex items-center justify-center gap-2 p-3 text-red-400 hover:bg-red-500/10 rounded-xl transition-all text-xs font-bold uppercase tracking-widest border border-red-500/20"><Trash2 size={16} /> Delete Component</button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center p-8 bg-zinc-800/30 rounded-2xl border border-dashed border-zinc-700"><MousePointer2 size={32} className="text-zinc-700 mb-4" /><p className="text-sm font-medium text-zinc-500 text-center">Nothing selected</p></div>
+        )}
+      </div>
     </div>
   );
 };

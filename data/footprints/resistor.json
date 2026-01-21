@@ -1,0 +1,10 @@
+{
+  "id": "resistor",
+  "name": "Resistor (0.4\")",
+  "width": 152.4,
+  "height": 50.8,
+  "pins": [
+    {"id": "1", "name": "1", "localPos": {"x": 25.4, "y": 25.4}, "type": "io"},
+    {"id": "2", "name": "2", "localPos": {"x": 127.0, "y": 25.4}, "type": "io"}
+  ]
+}
