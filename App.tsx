@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { 
-  PCBComponent, Trace, Vector2, Pin 
+  PCBComponent, Trace, Vector2 
 } from './types';
 import { FOOTPRINTS, SNAP_SIZE } from './constants';
 import { getPinGlobalPos, generateBezierPath, getPointOnBezier, checkCollision, getBezierControlPoints } from './utils/pcbUtils';
@@ -613,7 +613,9 @@ const App: React.FC = () => {
         <svg ref={boardRef} className="w-full h-full cursor-crosshair touch-none outline-none bg-zinc-950" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onWheel={onWheel}>
           <g ref={viewportRef} transform={`translate(${viewport.x}, ${viewport.y}) scale(${viewport.scale})`}>
             <defs>
-              <pattern id="grid" width={SNAP_SIZE} height={SNAP_SIZE} patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="1.5" fill="#3f3f46" /></pattern>
+              <pattern id="grid" width={SNAP_SIZE} height={SNAP_SIZE}   patternTransform="translate(-3 -3)" patternUnits="userSpaceOnUse">
+                <circle cx="3" cy="3" r="3" fill="#1d2a2f" />
+                </pattern>
             </defs>
             <rect x="-10000" y="-10000" width="20000" height="20000" fill="url(#grid)" />
 
