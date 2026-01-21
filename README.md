@@ -8,35 +8,8 @@
 ## 📸 Interface Preview
 
 <div align="center">
-  <svg width="600" height="350" viewBox="0 0 600 350" fill="none" xmlns="http://www.w3.org/2000/svg" style="border-radius: 12px; border: 1px solid #1a4a23; background: #050c07;">
-    <!-- Grid -->
-    <defs>
-      <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-        <circle cx="1" cy="1" r="1" fill="#152b1b" />
-      </pattern>
-    </defs>
-    <rect width="100%" height="100%" fill="url(#grid)" />
-    
-    <!-- Component Mockup -->
-    <rect x="100" y="80" width="80" height="180" rx="8" fill="#0a1a0f" stroke="#34d399" stroke-width="2" />
-    <text x="140" y="70" text-anchor="middle" fill="#34d399" font-family="monospace" font-size="10" font-weight="bold">ARDUINO_NANO</text>
-    <circle cx="115" cy="100" r="4" fill="#fcd34d" />
-    <circle cx="115" cy="120" r="4" fill="#fcd34d" />
-    <circle cx="115" cy="140" r="4" fill="#fcd34d" />
-    
-    <!-- Trace Mockup -->
-    <path d="M 115 100 C 180 100, 220 200, 300 200" stroke="#10b981" stroke-width="6" fill="none" stroke-linecap="round" />
-    <circle cx="300" cy="200" r="8" fill="#fcd34d" stroke="#0a1a0f" stroke-width="2" />
-    <text x="315" y="205" fill="#10b981" font-family="monospace" font-size="8">VCC_OUT</text>
-    
-    <!-- DRC Error Mockup -->
-    <circle cx="210" cy="155" r="15" fill="rgba(239, 68, 68, 0.2)" stroke="#ef4444" stroke-dasharray="3,2" />
-    
-    <!-- UI Overlay -->
-    <rect x="10" y="10" width="120" height="40" rx="10" fill="rgba(10, 26, 15, 0.9)" stroke="#1a4a23" />
-    <text x="25" y="35" fill="#34d399" font-family="sans-serif" font-weight="900" font-size="14">CircuitFlow</text>
-  </svg>
-  <p><i>Conceptual rendering of the CircuitFlow Bezier engine and DRC system.</i></p>
+  <img src="screenshot.svg" alt="CircuitFlow Interface" width="100%" style="border-radius: 12px; border: 1px solid #1a4a23;" />
+  <p><i>The CircuitFlow Bezier routing engine and real-time Design Rule Check (DRC) system.</i></p>
 </div>
 
 ---
