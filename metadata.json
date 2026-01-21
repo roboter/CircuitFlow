@@ -1,0 +1,5 @@
+{
+  "name": "CircuitFlow - Simple PCB Designer",
+  "description": "A beginner-friendly, touch-optimized PCB design tool for through-hole components. Features curved traces, node-style component movement, and GRBL export for CNC milling.",
+  "requestFramePermissions": []
+}
