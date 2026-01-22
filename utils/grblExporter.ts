@@ -1,7 +1,6 @@
-
 import { PCBComponent, Trace, Pin } from '../types';
 import { getPinGlobalPos, getBezierControlPoints } from './pcbUtils';
-import { FOOTPRINTS } from '../constants';
+import { getFootprint } from '../constants';
 
 export const exportToGRBL = (
   components: PCBComponent[],
@@ -25,7 +24,10 @@ export const exportToGRBL = (
   // 1. Drill Pads
   lines.push('(Drilling Pads)');
   components.forEach(comp => {
-    const footprint = FOOTPRINTS.find(f => f.id === comp.footprintId);
+    // Junctions (PIN) are not real physical components and should not be drilled
+    if (comp.footprintId === 'PIN') return;
+
+    const footprint = getFootprint(comp.footprintId);
     if (!footprint) return;
     footprint.pins.forEach(pin => {
       const pos = getPinGlobalPos(comp, pin);

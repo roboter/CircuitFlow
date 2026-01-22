@@ -1,7 +1,86 @@
-import { Footprint } from './types';
+import { Footprint, Pin } from './types';
 
 export const GRID_SIZE = 254.0; // Scaled up 10x
 export const SNAP_SIZE = 25.4; // 0.1 inch standard pitch
+
+/**
+ * Generates a standard DIP footprint with given pin count.
+ * Pitch is 0.1" (25.4mm).
+ * Row spacing is 0.3" (76.2mm) for <= 20 pins, 0.6" (152.4mm) for >= 24 pins.
+ */
+export const generateDIPFootprint = (pinCount: number): Footprint => {
+  const pitch = 25.4;
+  const rowSpacing = pinCount >= 24 ? 152.4 : 76.2;
+  const padding = 25.4;
+  const pinsPerRow = Math.ceil(pinCount / 2);
+  
+  const width = rowSpacing + padding * 2;
+  const height = (pinsPerRow - 1) * pitch + padding * 2;
+  
+  const pins: Pin[] = [];
+  
+  // Left side: Top to Bottom
+  for (let i = 0; i < pinsPerRow; i++) {
+    pins.push({
+      id: `p${i + 1}`,
+      componentId: "",
+      name: `${i + 1}`,
+      localPos: { x: padding, y: padding + i * pitch },
+      type: "io"
+    });
+  }
+  
+  // Right side: Bottom to Top (U-shape)
+  for (let i = 0; i < pinsPerRow; i++) {
+    const pinIndex = pinsPerRow + i;
+    if (pinIndex >= pinCount) break;
+    pins.push({
+      id: `p${pinIndex + 1}`,
+      componentId: "",
+      name: `${pinIndex + 1}`,
+      localPos: { x: padding + rowSpacing, y: padding + (pinsPerRow - 1 - i) * pitch },
+      type: "io"
+    });
+  }
+
+  return {
+    id: `dip_${pinCount}`,
+    name: `DIP-${pinCount} IC`,
+    width,
+    height,
+    pins
+  };
+};
+
+/**
+ * Generates a single-row pin header.
+ * Pitch is 0.1" (25.4mm).
+ */
+export const generateHeaderFootprint = (pinCount: number): Footprint => {
+  const pitch = 25.4;
+  const padding = 25.4;
+  const width = padding * 2;
+  const height = (pinCount - 1) * pitch + padding * 2;
+  
+  const pins: Pin[] = [];
+  for (let i = 0; i < pinCount; i++) {
+    pins.push({
+      id: `p${i + 1}`,
+      componentId: "",
+      name: `${i + 1}`,
+      localPos: { x: padding, y: padding + i * pitch },
+      type: "io"
+    });
+  }
+
+  return {
+    id: `header_${pinCount}`,
+    name: `${pinCount}-Pin Header`,
+    width,
+    height,
+    pins
+  };
+};
 
 export const FOOTPRINTS: Footprint[] = [
   {
@@ -65,32 +144,18 @@ export const FOOTPRINTS: Footprint[] = [
     "valueType": "capacitance"
   },
   {
-    "id": "dip_8",
-    "name": "DIP-8 IC",
+    "id": "dip",
+    "name": "DIP IC",
     "width": 127.0,
-    "height": 127.0,
-    "pins": [
-      {"id": "p1", "componentId": "", "name": "1", "localPos": {"x": 25.4, "y": 25.4}, "type": "io"},
-      {"id": "p2", "componentId": "", "name": "2", "localPos": {"x": 25.4, "y": 50.8}, "type": "io"},
-      {"id": "p3", "componentId": "", "name": "3", "localPos": {"x": 25.4, "y": 76.2}, "type": "io"},
-      {"id": "p4", "componentId": "", "name": "4", "localPos": {"x": 25.4, "y": 101.6}, "type": "io"},
-      {"id": "p5", "componentId": "", "name": "5", "localPos": {"x": 101.6, "y": 101.6}, "type": "io"},
-      {"id": "p6", "componentId": "", "name": "6", "localPos": {"x": 101.6, "y": 76.2}, "type": "io"},
-      {"id": "p7", "componentId": "", "name": "7", "localPos": {"x": 101.6, "y": 50.8}, "type": "io"},
-      {"id": "p8", "componentId": "", "name": "8", "localPos": {"x": 101.6, "y": 25.4}, "type": "io"}
-    ]
+    "height": 101.6,
+    "pins": []
   },
   {
-    "id": "header_4",
-    "name": "4-Pin Header",
+    "id": "header",
+    "name": "Pin Header",
     "width": 50.8,
-    "height": 127.0,
-    "pins": [
-      {"id": "p1", "componentId": "", "name": "1", "localPos": {"x": 25.4, "y": 25.4}, "type": "io"},
-      {"id": "p2", "componentId": "", "name": "2", "localPos": {"x": 25.4, "y": 50.8}, "type": "io"},
-      {"id": "p3", "componentId": "", "name": "3", "localPos": {"x": 25.4, "y": 76.2}, "type": "io"},
-      {"id": "p4", "componentId": "", "name": "4", "localPos": {"x": 25.4, "y": 101.6}, "type": "io"}
-    ]
+    "height": 50.8,
+    "pins": []
   },
   {
     "id": "led",
@@ -121,3 +186,15 @@ export const FOOTPRINTS: Footprint[] = [
     ]
   }
 ];
+
+export const getFootprint = (id: string): Footprint | undefined => {
+  if (id.startsWith('dip_')) {
+    const pins = parseInt(id.replace('dip_', ''));
+    return generateDIPFootprint(pins);
+  }
+  if (id.startsWith('header_')) {
+    const pins = parseInt(id.replace('header_', ''));
+    return generateHeaderFootprint(pins);
+  }
+  return FOOTPRINTS.find(f => f.id === id);
+};

@@ -1,13 +1,12 @@
-
 import { Vector2, PCBComponent, Footprint, Trace, Pin } from '../types';
-import { FOOTPRINTS } from '../constants';
+import { getFootprint } from '../constants';
 
 export const getPinGlobalPos = (component: PCBComponent, pin: Pin): Vector2 => {
   const rad = (component.rotation * Math.PI) / 180;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
 
-  const footprint = FOOTPRINTS.find(f => f.id === component.footprintId);
+  const footprint = getFootprint(component.footprintId);
   if (!footprint) return component.position;
 
   const cx = footprint.width / 2;

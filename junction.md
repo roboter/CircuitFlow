@@ -18,3 +18,8 @@ Junctions in CircuitFlow (referenced by footprint ID `PIN`) are specialized node
 ## 4. Connectivity Rules
 - **Non-Component Connection**: Traces connected to a 'PIN' junction are logically parts of the same net path.
 - **Auto-Adjustment**: Moving a 'PIN' junction updates all connected segments instantly.
+
+
+
+When moving junction always be the same Smooth joining 
+also when moving components

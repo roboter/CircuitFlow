@@ -10,6 +10,8 @@ export interface Pin {
   name: string;
   localPos: Vector2;
   type: 'io' | 'power' | 'ground';
+  // Added globalPos to support coordinate calculations in design engine
+  globalPos?: Vector2;
 }
 
 export interface Footprint {
