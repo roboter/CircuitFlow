@@ -24,23 +24,15 @@ export const getPinGlobalPos = (component: PCBComponent, pin: Pin): Vector2 => {
   };
 };
 
-/**
- * Calculates control points for a smooth curve.
- * Uses manual offsets if provided, otherwise auto-calculates based on dominant axis
- * to ensure traces project in a sensible direction (top/bottom or left/right).
- */
 export const getBezierControlPoints = (start: Vector2, end: Vector2, trace?: Trace) => {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
-  
-  // Smart auto-tangent: follow the dominant axis between pins
   const useHorizontal = Math.abs(dx) >= Math.abs(dy);
   const autoTensionFactor = 0.45;
   const minTension = 30;
 
   let cx1, cy1, cx2, cy2;
 
-  // Calculate Start Control Point (C1)
   if (trace?.c1Offset) {
     cx1 = start.x + trace.c1Offset.x;
     cy1 = start.y + trace.c1Offset.y;
@@ -56,7 +48,6 @@ export const getBezierControlPoints = (start: Vector2, end: Vector2, trace?: Tra
     }
   }
 
-  // Calculate End Control Point (C2)
   if (trace?.c2Offset) {
     cx2 = end.x + trace.c2Offset.x;
     cy2 = end.y + trace.c2Offset.y;
@@ -98,4 +89,38 @@ export const checkCollision = (p1: Vector2, p2: Vector2, minDistance: number): b
   const dx = p1.x - p2.x;
   const dy = p1.y - p2.y;
   return (dx * dx + dy * dy) < (minDistance * minDistance);
+};
+
+export const findConnectedTraces = (startTraceId: string, allTraces: Trace[], allComponents: PCBComponent[]): string[] => {
+  const result = new Set<string>();
+  const queue = [startTraceId];
+  const junctionCompIds = new Set(allComponents.filter(c => c.footprintId === 'JUNCTION').map(c => c.id));
+
+  while (queue.length > 0) {
+    const tid = queue.shift()!;
+    if (result.has(tid)) continue;
+    result.add(tid);
+
+    const trace = allTraces.find(t => t.id === tid);
+    if (!trace) continue;
+
+    const pins = [trace.fromPinId, trace.toPinId];
+    for (const pinId of pins) {
+      // Correct component ID extraction from pin ID (everything before the last '_')
+      const lastUnderscore = pinId.lastIndexOf('_');
+      const compId = lastUnderscore !== -1 ? pinId.substring(0, lastUnderscore) : pinId;
+
+      if (junctionCompIds.has(compId)) {
+        // Any trace connected to ANY pin of this junction component is connected
+        // Though junctions usually have 1 pin, this is safer.
+        const neighbors = allTraces.filter(t => t.id !== tid && (
+          t.fromPinId.startsWith(compId + '_') || t.toPinId.startsWith(compId + '_')
+        ));
+        for (const n of neighbors) {
+          if (!result.has(n.id)) queue.push(n.id);
+        }
+      }
+    }
+  }
+  return Array.from(result);
 };

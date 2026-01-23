@@ -1,3 +1,4 @@
+
 import { Footprint, Pin } from './types';
 
 export const GRID_SIZE = 254.0; // Scaled up 10x
@@ -5,8 +6,6 @@ export const SNAP_SIZE = 25.4; // 0.1 inch standard pitch
 
 /**
  * Generates a standard DIP footprint with given pin count.
- * Pitch is 0.1" (25.4mm).
- * Row spacing is 0.3" (76.2mm) for <= 20 pins, 0.6" (152.4mm) for >= 24 pins.
  */
 export const generateDIPFootprint = (pinCount: number): Footprint => {
   const pitch = 25.4;
@@ -19,7 +18,6 @@ export const generateDIPFootprint = (pinCount: number): Footprint => {
   
   const pins: Pin[] = [];
   
-  // Left side: Top to Bottom
   for (let i = 0; i < pinsPerRow; i++) {
     pins.push({
       id: `p${i + 1}`,
@@ -30,7 +28,6 @@ export const generateDIPFootprint = (pinCount: number): Footprint => {
     });
   }
   
-  // Right side: Bottom to Top (U-shape)
   for (let i = 0; i < pinsPerRow; i++) {
     const pinIndex = pinsPerRow + i;
     if (pinIndex >= pinCount) break;
@@ -48,14 +45,11 @@ export const generateDIPFootprint = (pinCount: number): Footprint => {
     name: `DIP-${pinCount} IC`,
     width,
     height,
-    pins
+    pins,
+    shape: 'rect'
   };
 };
 
-/**
- * Generates a single-row pin header.
- * Pitch is 0.1" (25.4mm).
- */
 export const generateHeaderFootprint = (pinCount: number): Footprint => {
   const pitch = 25.4;
   const padding = 25.4;
@@ -78,7 +72,8 @@ export const generateHeaderFootprint = (pinCount: number): Footprint => {
     name: `${pinCount}-Pin Header`,
     width,
     height,
-    pins
+    pins,
+    shape: 'rect'
   };
 };
 
@@ -119,7 +114,8 @@ export const FOOTPRINTS: Footprint[] = [
       {"id": "p28", "componentId": "", "name": "D10", "localPos": {"x": 177.8, "y": 330.2}, "type": "io"},
       {"id": "p29", "componentId": "", "name": "D11", "localPos": {"x": 177.8, "y": 355.6}, "type": "io"},
       {"id": "p30", "componentId": "", "name": "D12", "localPos": {"x": 177.8, "y": 381.0}, "type": "io"}
-    ]
+    ],
+    "shape": 'rect'
   },
   {
     "id": "resistor",
@@ -130,32 +126,32 @@ export const FOOTPRINTS: Footprint[] = [
       {"id": "1", "componentId": "", "name": "1", "localPos": {"x": 25.4, "y": 25.4}, "type": "io"},
       {"id": "2", "componentId": "", "name": "2", "localPos": {"x": 127.0, "y": 25.4}, "type": "io"}
     ],
-    "valueType": "resistance"
+    "valueType": "resistance",
+    "shape": 'rect'
   },
   {
-    "id": "capacitor",
-    "name": "Capacitor (0.1\")",
+    "id": "capacitor_electrolytic",
+    "name": "Electrolytic Cap",
     "width": 50.8,
     "height": 50.8,
     "pins": [
-      {"id": "1", "componentId": "", "name": "1", "localPos": {"x": 12.7, "y": 25.4}, "type": "io"},
-      {"id": "2", "componentId": "", "name": "2", "localPos": {"x": 38.1, "y": 25.4}, "type": "io"}
+      {"id": "1", "componentId": "", "name": "+", "localPos": {"x": 12.7, "y": 25.4}, "type": "io", "decoration": "plus"},
+      {"id": "2", "componentId": "", "name": "-", "localPos": {"x": 38.1, "y": 25.4}, "type": "io"}
     ],
-    "valueType": "capacitance"
+    "valueType": "capacitance",
+    "shape": 'circle'
   },
   {
-    "id": "dip",
-    "name": "DIP IC",
-    "width": 127.0,
-    "height": 101.6,
-    "pins": []
-  },
-  {
-    "id": "header",
-    "name": "Pin Header",
+    "id": "capacitor_ceramic",
+    "name": "Ceramic Cap",
     "width": 50.8,
-    "height": 50.8,
-    "pins": []
+    "height": 25.4,
+    "pins": [
+      {"id": "1", "componentId": "", "name": "1", "localPos": {"x": 12.7, "y": 12.7}, "type": "io"},
+      {"id": "2", "componentId": "", "name": "2", "localPos": {"x": 38.1, "y": 12.7}, "type": "io"}
+    ],
+    "valueType": "capacitance",
+    "shape": 'rect'
   },
   {
     "id": "led",
@@ -163,9 +159,45 @@ export const FOOTPRINTS: Footprint[] = [
     "width": 50.8,
     "height": 50.8,
     "pins": [
-      {"id": "A", "componentId": "", "name": "A", "localPos": {"x": 12.7, "y": 25.4}, "type": "io"},
-      {"id": "K", "componentId": "", "name": "K", "localPos": {"x": 38.1, "y": 25.4}, "type": "io"}
-    ]
+      {"id": "A", "componentId": "", "name": "A", "localPos": {"x": 12.7, "y": 25.4}, "type": "io", "decoration": "plus"},
+      {"id": "K", "componentId": "", "name": "K", "localPos": {"x": 38.1, "y": 25.4}, "type": "io", "decoration": "notch"}
+    ],
+    "shape": 'circle'
+  },
+  {
+    "id": "diode",
+    "name": "Diode (0.3\")",
+    "width": 101.6,
+    "height": 38.1,
+    "pins": [
+      {"id": "A", "componentId": "", "name": "A", "localPos": {"x": 25.4, "y": 19.05}, "type": "io"},
+      {"id": "K", "componentId": "", "name": "K", "localPos": {"x": 76.2, "y": 19.05}, "type": "io"}
+    ],
+    "shape": 'rect'
+  },
+  {
+    "id": "inductor",
+    "name": "Power Inductor",
+    "width": 76.2,
+    "height": 76.2,
+    "pins": [
+      {"id": "1", "componentId": "", "name": "1", "localPos": {"x": 12.7, "y": 38.1}, "type": "io"},
+      {"id": "2", "componentId": "", "name": "2", "localPos": {"x": 63.5, "y": 38.1}, "type": "io"}
+    ],
+    "valueType": "inductance",
+    "shape": 'rect'
+  },
+  {
+    "id": "transistor",
+    "name": "TO-92 Transistor",
+    "width": 76.2,
+    "height": 50.8,
+    "pins": [
+      {"id": "1", "componentId": "", "name": "1", "localPos": {"x": 12.7, "y": 25.4}, "type": "io"},
+      {"id": "2", "componentId": "", "name": "2", "localPos": {"x": 38.1, "y": 25.4}, "type": "io"},
+      {"id": "3", "componentId": "", "name": "3", "localPos": {"x": 63.5, "y": 25.4}, "type": "io"}
+    ],
+    "shape": 'rect'
   },
   {
     "id": "pin",
@@ -174,20 +206,41 @@ export const FOOTPRINTS: Footprint[] = [
     "height": 25.4,
     "pins": [
       {"id": "p1", "componentId": "", "name": "Pin", "localPos": {"x": 12.7, "y": 12.7}, "type": "io"}
-    ]
+    ],
+    "shape": 'rect'
   },
   {
-    "id": "PIN",
-    "name": "Junction",
-    "width": 25.4,
-    "height": 25.4,
-    "pins": [
-      {"id": "p1", "componentId": "", "name": "J", "localPos": {"x": 12.7, "y": 12.7}, "type": "io"}
-    ]
+    "id": "dip",
+    "name": "DIP IC",
+    "width": 127.0,
+    "height": 101.6,
+    "pins": [],
+    "shape": 'rect'
+  },
+  {
+    "id": "header",
+    "name": "Pin Header",
+    "width": 50.8,
+    "height": 50.8,
+    "pins": [],
+    "shape": 'rect'
   }
 ];
 
+// Junction is a system footprint, not in user library
+const JUNCTION_FOOTPRINT: Footprint = {
+  "id": "JUNCTION",
+  "name": "Junction",
+  "width": 25.4,
+  "height": 25.4,
+  "pins": [
+    {"id": "p1", "componentId": "", "name": "J", "localPos": {"x": 12.7, "y": 12.7}, "type": "io"}
+  ],
+  "shape": 'circle'
+};
+
 export const getFootprint = (id: string): Footprint | undefined => {
+  if (id === 'JUNCTION') return JUNCTION_FOOTPRINT;
   if (id.startsWith('dip_')) {
     const pins = parseInt(id.replace('dip_', ''));
     return generateDIPFootprint(pins);
